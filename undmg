@@ -1,0 +1,106 @@
+#!/bin/bash
+
+# -------------------------------------------------
+# Unarchives a .dmg package using hdiutil
+# -------------------------------------------------
+
+script=${0##*/}
+verbose=0
+outdir=$(pwd)
+
+function usage {
+cat <<EOF
+usage: $script [options] dmg_file
+
+    -o path   Output directory
+    -v        Verbose
+    -h        Help
+
+EOF
+exit 1
+}
+
+# bail <exit_code> <error_message>
+# exits with a given code and message
+function bail {
+  [[ ! -z $2 ]] && echo $2 >&2
+  exit ${1:-1}
+}
+
+# pvar <var1> <var..>
+# prints a list of vars i.e. 'var=$var'
+function pvar {
+  [[ $verbose = 0 ]] && return
+  for v in "$@"; do
+    eval echo $v=\$$v
+  done
+}
+
+# exit trap
+function cleanup {
+  rm -rf $mountpoint
+}
+trap cleanup EXIT
+
+# parse options
+while getopts :o:hv opt; do
+  case $opt in
+    h)  usage;;
+    v)  verbose=1;;
+    o)  outdir=$OPTARG;;
+    :)  bail 1 "-$OPTARG requires an argument.";;
+    *)  bail 1 "-$OPTARG not implemented.";;
+    \?) bail 1 "-$OPTARG invalid.";;
+  esac
+done
+shift $((OPTIND-1))
+
+pvar verbose outdir
+
+IFS=$'\n'
+
+for dmg in ${@}; do
+  dmg_base=$(basename "$dmg" .dmg)
+  pvar dmg dmg_base
+
+  # Check for source image
+  [[ -f "$dmg" ]] || bail 2 "File not found: $dmg"
+
+  # Create a tmp mount point
+  mountpoint=$(mktemp -d -t $script)
+  pvar mountpoint
+
+  # Mount with hdiutil
+  yes | hdiutil attach -mountpoint "${mountpoint}" "${dmg}"
+  [[ $? == 0 ]] || bail 2 "Error mounting image $dmg to $mountpoint"
+
+  # Choose an incremental output dir
+  dmg_incr=1
+  dmg_dst="$outdir/$dmg_base"
+
+  while [[ -d "$dmg_dst" ]]
+  do
+    dmg_dst="$outdir/$dmg_base-$dmg_incr"
+    ((dmg_incr++))
+  done
+
+  pvar dmg_dst
+
+  # Create the output dir
+  mkdir "$dmg_dst" || bail 3 "Error creating destination '$dmg_dst'";
+
+  # Copy useful things
+  find $mountpoint \
+    ! -name ".*" \
+    -depth 1 \
+    -exec echo {} \; -exec cp -R {} "$dmg_dst" \; || cp_fail=1
+  pvar cp_fail
+
+  # Detach image
+  hdiutil detach "${mountpoint}"
+
+  [[ -z $cp_fail ]] || echo "Copy files failed!!";
+
+done
+
+exit 0
